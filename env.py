@@ -381,7 +381,7 @@ class Minesweeper():
         '''
         while True:
             # Input from the user
-            inp = input("Enter row and column = ").split()
+            inp = input("Enter row and column (add F to flag a cell) = ").split()
 
             if len(inp) == 2:
                 flag = False
@@ -391,7 +391,7 @@ class Minesweeper():
                 except ValueError:
                     clear_terminal()
                     self.print_env()
-                    print("Wrong input: Please enter two numbers")
+                    print("Wrong input: Please enter two numbers separated by a space")
                     continue
 
             elif len(inp) == 3 and inp[2] == "F":
