@@ -1,6 +1,6 @@
 # Project
 
-## Howto run
+## How to run
 
 You can play the game yourself using the command:
 ```sh
@@ -27,3 +27,6 @@ where strategy is one of the following:
 
 `MLP`:
     Multi layer perceptron.
+
+The strategy `CNN` results can be viewed in the notebook `CNN_solver.ipynb`.
+Reloading all cells takes at least 45 minutes.
