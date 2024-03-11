@@ -1,6 +1,14 @@
 """
 NEURAL NETWORK SOLVER
 -------------------------------
+working principle:
+ - we make the model choose a cell from the border
+    - every cell in the border is embeded using it's 5x5 neighborhood
+    - the model learn using a QLearning algorithm
+ 
+-quantify:
+    -success rate
+    -computation time
 """
 
 import matplotlib.pyplot as plt
@@ -15,11 +23,48 @@ import torch.nn as nn
 from tqdm import tqdm
 import itertools
 
+import time
+
 import os
 
-class MLPModel(nn.Module):
 
-    def __init__(self, n_observations, nn_l1=128, nn_l2=128, nn_l3=128, nn_l4=128):
+# default parameters
+# ------------------
+NN_L1 = 128 # neurons in the first layer
+NN_L2 = 128 # neurons in the second layer
+NN_L3 = 128 # neurons in the third layer
+NN_L4 = 128 # neurons in the fourth layer
+
+MIN_PROBA = 1e-3 # probability under which select a random cell instead of border cell
+
+CONTINUE_REWARD = 1 # the reward gained each turn
+LOSS_REWARD = -50   # the reward if we lose the game
+WIN_REWARD = 50     # the reward if we won the game
+
+EPSILON_START = 0.82   # the initial epsilon value
+EPSILON_MIN = 0.013    # the minimum epsilon value
+EPSILON_DECAY = 0.9675 # the decay epsilon value
+
+NUM_EPISODES = 150 # the number of episode per training
+GAMMA = 0.9 # the gamma value for QLearning
+
+NUM_TRAININGS = 20 # the number of trainings
+LR = 0.01 # the learning rate
+# ------------------
+
+class MLPModel(nn.Module):
+    '''
+        Implements a multi layer perceptron model for minesweeper
+
+        Properties
+        ----------
+        layer1: The first linear layer followed by ReLU activation
+        layer2: The second linear layer followed by ReLU activation
+        layer3: The third linear layer followed by ReLU activation
+        layer4: The fourth linear layer followed by ReLU activation
+        layer5: The fifth linear layer followed by Sigmoid activation
+    '''
+    def __init__(self, n_observations, nn_l1=NN_L1, nn_l2=NN_L2, nn_l3=NN_L3, nn_l4=NN_L4):
         super(MLPModel, self).__init__()
 
         self.layer1 = nn.Sequential(
@@ -48,6 +93,7 @@ class MLPModel(nn.Module):
         )
 
     def forward(self, x):
+        '''Forward pass for the Neural Network'''
         batch_size = x.size(0)
         x = self.layer1(x)
         x = self.layer2(x)
@@ -58,7 +104,17 @@ class MLPModel(nn.Module):
 
 
 class EpsilonGreedy():
-    def __init__(self, epsilon_start, epsilon_min, epsilon_decay, model):
+    '''
+        Implements an epsilon greedy algorithm
+
+        Properties
+        ----------
+        model: The current model
+        epsilon: The current epsilon value
+        epsilon_min: The minimum epsilon value
+        epsilon_decay: The epsilon decay value
+    '''
+    def __init__(self, model, epsilon_start=EPSILON_START, epsilon_min=EPSILON_MIN, epsilon_decay=EPSILON_DECAY):
         self.epsilon = epsilon_start
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
@@ -71,6 +127,7 @@ class EpsilonGreedy():
         return a
 
     def __call__(self, observable_cells_ids, state, game):
+        '''Caller for the epsilon greedy algorithm'''
         val = np.random.random_sample()
         if(val < self.epsilon or state.size == 0): # if first step return random action
             action = self.get_random_cell(game)
@@ -78,23 +135,36 @@ class EpsilonGreedy():
 
         state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
         values = self.model(state_tensor)
-        index = torch.argmax(values)
+        if torch.max(values) < MIN_PROBA:
+            action = self.get_random_cell(game)
+            return action
+        index = torch.argmin(values)
         # print("values: ", values)
         # print("index: ", index)
         action = observable_cells_ids[index.item()]
         return action
 
     def decay_epsilon(self):
+        '''Update epsilon's value'''
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)        
 
 
 
 class NeuralNetworkStrategy():
+    '''
+        Implements the MLP strategy for minesweeper
+
+        Properties
+        ----------
+        verbose: The verbosity level
+        env: Minesweeper
+    '''
     def __init__(self, verbose=1):
         self.verbose = verbose
         self.reset_env()
 
     def reset_env(self, game=None):
+        '''Reset the environment'''
         if game is None:
             game = env.Minesweeper("beginner", display=False) # train on beginner mode
         self.env = game
@@ -163,16 +233,18 @@ class NeuralNetworkStrategy():
         return bordering_cells, state
 
     def get_reward(self, over):
+        '''Get the reward given the `over' state'''
         reward = 0
         if over == 0: # continue
-            reward = 1
+            reward = CONTINUE_REWARD
         elif over == 1: # loss
-            reward = -50
+            reward = LOSS_REWARD
         elif over == 2: # win
-            reward = 50
+            reward = WIN_REWARD
         return reward
 
-    def train_model_episode(self, model, epsilon_greedy, optimizer, loss_fn, device, num_episodes, gamma):
+    def train_model_episode(self, model, epsilon_greedy, optimizer, loss_fn, device, num_episodes=NUM_EPISODES, gamma=GAMMA):
+        '''One training'''
         episode_reward_list = []
 
         for episode_index in tqdm(range(1, num_episodes)):
@@ -230,8 +302,8 @@ class NeuralNetworkStrategy():
 
 
 
-    def train_model(self, device, save_file, number_of_trainings, lr):
-        
+    def train_model(self, device, save_file, number_of_trainings=NUM_TRAININGS, lr=LR):
+        '''Completely train the model'''
         trains_result_list = [[], [], []]
 
         for train_index in range(number_of_trainings):
@@ -239,16 +311,14 @@ class NeuralNetworkStrategy():
             optimizer = torch.optim.AdamW(model.parameters(), lr=lr, amsgrad=True)
             loss_fn = torch.nn.MSELoss()
 
-            epsilon_greedy = EpsilonGreedy(epsilon_start=0.82, epsilon_min=0.013, epsilon_decay=0.9675, model=model)
+            epsilon_greedy = EpsilonGreedy(model=model)
 
             episode_reward_list = self.train_model_episode(
                 model=model, 
                 epsilon_greedy=epsilon_greedy, 
                 optimizer=optimizer, 
                 loss_fn=loss_fn, 
-                device=device, 
-                num_episodes=150, 
-                gamma=0.9, 
+                device=device
             )
 
             trains_result_list[0].extend(range(len(episode_reward_list)))
@@ -271,8 +341,6 @@ class NeuralNetworkStrategy():
         
         return over
 
-    
-
     def solve(self, device):
         ''' Solve the game'''
         over = False
@@ -284,10 +352,10 @@ class NeuralNetworkStrategy():
                 state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
                 values = self.model(state_tensor)
                 max_value = torch.max(values)
-                if(max_value == 0):
+                if(max_value < 1e-3):
                     action = self.get_random_cell()
                 else:
-                    action = bordering_cells[torch.argmax(values)]
+                    action = bordering_cells[torch.argmin(values)]
 
             over = self.uncover_cell(action)
                 
@@ -298,9 +366,11 @@ class NeuralNetworkStrategy():
             print("You lost")
         elif over == 2:
             print("You won")
+        return over
 
 
-def load_or_train_model(solver, device, number_of_trainings=20, lr=0.001, force_retrain=False):
+def load_or_train_model(solver, device, number_of_trainings=NUM_TRAININGS, lr=LR, force_retrain=False):
+    '''Helper function to check if the model must be trained or loaded from a file'''
     model_file = "first_mlp.pth"
 
     if (not force_retrain) and (os.path.isfile(model_file)):
@@ -311,13 +381,32 @@ def load_or_train_model(solver, device, number_of_trainings=20, lr=0.001, force_
         solver.train_model(device=device, save_file=model_file, number_of_trainings=number_of_trainings, lr=lr)
     return
 
+
 if __name__ == "__main__":
-    solver = NeuralNetworkStrategy(verbose=2)
+    solver = NeuralNetworkStrategy(verbose=0)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Set the device to CUDA if available, otherwise use CPU
     print("device: ", device)
     
-    load_or_train_model(solver=solver, device=device, force_retrain=True)
-    solver.reset_env(game = env.Minesweeper("beginner", display=True)) # select the grid to try on
-    solver.solve(device=device)
-
+    # train the model multiple times to get the time in average
+    sum_times = 0
+    nb_retrainings = 1
+    for _ in range(nb_retrainings):
+        tic = time.perf_counter()
+        load_or_train_model(solver=solver, device=device, force_retrain=True)
+        toc = time.perf_counter()
+        cur_time = toc - tic
+        print(f"Trained the model in {toc - tic:0.4f} seconds")
+        sum_times += cur_time
+    print(f"Training {nb_retrainings} models in {(sum_times / nb_retrainings):0.4f} seconds on average")
+    
+    # test the model multiple times to get the winrate
+    nb_tests = 100
+    nb_wins = 0
+    for _ in range(nb_tests):
+        solver.reset_env(game = env.Minesweeper("beginner", display=True)) # select the grid to try on
+        over = solver.solve(device=device)
+        if over == 2:
+            nb_wins += 1
+    
+    print(f"Random strategy: {nb_wins / nb_tests} wins on average")
     print()
