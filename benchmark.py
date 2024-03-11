@@ -14,7 +14,7 @@ if __name__ == "__main__":
     # test the model multiple times to get the winrate
     for strategy in strategies:
         for difficulty in difficulties:
-            print(f"testing {strategy} on {difficulty}")
+            print(f"testing {strategy} on {difficulty}:", end=" ")
             nb_wins = 0
             start = time()
             for _ in range(nb_tests):
@@ -27,6 +27,7 @@ if __name__ == "__main__":
             Res["difficulty"].append(difficulty)
             Res["winrate"].append(nb_wins / nb_tests)
             Res["time"].append(end - start)
+            print(f"winrate: {nb_wins/nb_tests}, time: {end-start}")
 
     df = pd.DataFrame(Res)
     print(df)

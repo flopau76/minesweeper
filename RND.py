@@ -24,8 +24,8 @@ class Random_strategy():
         verbose: The verbosity
 
     '''
-    def __init__(self, verbose=1):
-        self.game = env.Minesweeper("beginner", display=bool(verbose-1))
+    def __init__(self, game="beginner", verbose=1):
+        self.game = env.Minesweeper(game, display=(verbose>=2))
         self.verbose = verbose
 
     def get_random_cell(self):
