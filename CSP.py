@@ -74,7 +74,7 @@ class Constraint_satisfaction_strategy():
     ''' Implements constraint satisfaction strategy for minesweeper'''
     def __init__(self, game="beginner", verbose=1, choice="R"):
 
-        self.game = env.Minesweeper(game, display=bool(verbose-1))
+        self.game = env.Minesweeper(game, display=(verbose>=2))
         self.constraints = []
         self.verbose = verbose
 
@@ -213,14 +213,17 @@ class Constraint_satisfaction_strategy():
             else:
                 over = self.uncover_cell(cell)
                 
-        self.game.show_mines() 
-        if over == 1:
-            print("You lost")
-        else:
-            print("You won")
+        self.game.show_mines()
+        if self.verbose>=1:
+            self.game.print_env()
+            if over == 1:
+                print("You lost")
+            else:
+                print("You won")
         if self.verbose >=2:
             self.game.update_display()
             plt.waitforbuttonpress()   
+        return over
 
 if __name__ == "__main__":
     solver = Constraint_satisfaction_strategy(verbose=2)

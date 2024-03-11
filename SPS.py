@@ -37,7 +37,7 @@ class single_point_strategy():
     '''
     def __init__(self, game="beginner", verbose=1, choice="R"):
 
-        self.game = env.Minesweeper(game, display=bool(verbose-1))
+        self.game = env.Minesweeper(game, display=(verbose>=2))
         self.stack = set()
         self.verbose = verbose
 
@@ -139,14 +139,16 @@ class single_point_strategy():
                     break
               
         self.game.show_mines()
-        self.game.print_env()
-        if over == 1:
-            print("You lost")
-        else:
-            print("You won")
+        if self.verbose>=1:
+            self.game.print_env()
+            if over == 1:
+                print("You lost")
+            else:
+                print("You won")
         if self.verbose >=2:
             self.game.update_display()
             plt.waitforbuttonpress()  
+        return over
 
 
 if __name__ == "__main__":

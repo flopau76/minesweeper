@@ -10,6 +10,7 @@ working principle:
 """
 
 import random
+import matplotlib.pyplot as plt
 import env
 import numpy as np
 
@@ -51,12 +52,15 @@ class Random_strategy():
             if over:
                 break
         self.game.show_mines()
-        self.game.print_env()
-        self.game.update_display()
-        if over == 1:
-            print("You lost")
-        else:
-            print("You won")
+        if self.verbose >= 1:
+            self.game.print_env()
+            if over == 1:
+                print("You lost")
+            else:
+                print("You won")
+        if self.verbose >= 2:
+            self.game.update_display()
+            plt.waitforbuttonpress()  
         return over
 
 
