@@ -1,10 +1,9 @@
 """
-TODO:
--user interface: play by clicking on the graph
+Mineweeper Environment
+-----------------------
+This file implements the Minesweeper environment
 
-for learning:
-- deactivate display: OK
-- deactivate uncovering of cells neigboring 0: OK
+It can be launched directly to play a game in a terminal. 
 """
 
 import numpy as np
@@ -16,11 +15,11 @@ import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap
 
 def int2tupple(y, n_cols):
-    ''' utility function: convert tile number (0,...,n-1) to matrix row, col'''
+    ''' utility function: convert int in (0,...,n-1) to matrix coordinates (row, col)'''
     return int(y) // n_cols, int(y) % n_cols
 
 def tupple2int(x, n_cols):
-    ''' utility function: convert matrix row, col to tile number'''
+    ''' utility function: convert matrix coordinates (row, col) to int'''
     i, j = x
     return i*n_cols + j
 
@@ -30,29 +29,26 @@ def clear_terminal():
 
 class Minesweeper():
     '''
-        Class to represent the Minesweeper environment.
+    Class to represent the Minesweeper environment. 
 
-        Properties
-        ----------
-        n_rows, n_cols : int
-            size of grid
-        n_mines : int
-            number of mines
-        E : array_like(int, ndim=2, dtype=int)
-            grid with the number of mines in the adjacent tiles: -1 if mine, 0-8 otherwise
-        O : array_like(bool, ndim=2, dtype=int)
-            observable grid: -1 if mine, -2 if covered, -3 if flagged, 0-8 if otherwise
-        n_remaining : int
-            number of tiles left to be explored
-        display : None or tuple (fig, ax, im)
-            visual representation of the environments
-        
-
+    Attributes
+    ----------
+    n_rows, n_cols : int
+        size of grid
+    n_mines : int
+        number of mines
+    E : array_like(int, ndim=2, dtype=int)
+        grid with the number of mines in the adjacent tiles: -1 if mine, 0-8 otherwise
+    O : array_like(bool, ndim=2, dtype=int)
+        observable grid: -1 if mine, -2 if covered, -3 if flagged, 0-8 if otherwise
+    n_remaining : int
+        number of tiles left to be explored
+    display : None or tuple (fig, ax, im)
+        visual representation of the environments
     '''
  
     def __init__(self, game="beginner", display=False):
-        ''' 
-            Initialize the environment.
+        ''' Initialize the environment.
             
             Parameters
             ----------
@@ -112,6 +108,8 @@ class Minesweeper():
         else:
             self.display = None
 
+# _________________________________________________________________________________________
+# Getting information about the environment
     def get_covered_cells(self, covered=True):
         ''' utility function: get the indices of the (un)covered cells'''
         if covered:
@@ -156,9 +154,10 @@ class Minesweeper():
             i,j = int2tupple(a, self.n_cols)    
         return self.O[i,j]
 
+# _________________________________________________________________________________________
+# Taking actions and updating the environment
     def take_action(self, a, flag=False, uncover_neighbors=False):
-        '''
-            Take an action (i.e., reveal a tile).
+        ''' Take an action (i.e., reveal or flag a tile).
             
             Parameters
             ----------
@@ -197,8 +196,7 @@ class Minesweeper():
         return 1
     
     def uncover_neighbors(self, a):
-        '''
-            Uncover all cells neighboring a cell with 0 mines.
+        ''' Uncover all cells neighboring a cell with 0 mines.
             
             Parameters
             ----------
@@ -216,35 +214,29 @@ class Minesweeper():
                     self.n_remaining -= 1
                     if self.E[a,b] == 0:
                         self.uncover_neighbors((a,b))
-    
+
+# _________________________________________________________________________________________
+# Clearing and resetting the environment                           
     def clear(self):
-        '''
-            Clear the environment, keeping the same mine location.
-        '''
+        ''' Clear the environment, keeping the same mine location. '''
         self.n_remaining = self.n_rows * self.n_cols - self.n_mines
         self.O = -1 * np.ones((self.n_rows, self.n_cols), dtype=int)
     
     def reset(self):
-        '''
-            Clear the environment, reseting the game with new mines.
-        '''
+        ''' Clear the environment, reseting the game with new mines. '''
         self.__init__((self.n_rows, self.n_cols, self.n_mines))
 
-# The following methods are for plotting and user interface only
-
+# _________________________________________________________________________________________
+# Plotting and user interface only
     def show_mines(self):
-        '''
-            Show the location of the mines (useful at the end of the game).
-        '''
+        ''' Update O with the position of all mines (usefull only at the end of the game) '''
         for i in range(self.n_rows):
             for j in range(self.n_cols):
                 if self.E[i,j] == -1:
                     self.O[i,j] = -1
 
     def create_display(self):
-        '''
-            Creates a visual representation of the environment.                
-        '''
+        ''' Creates a visual representation of the environment. '''
         plt.close()
         fig, ax = plt.subplots(figsize=[8,4])
 
@@ -294,10 +286,9 @@ class Minesweeper():
         return fig, ax, im
  
     def update_display(self):
-        '''
-            Update the visual representation of the environment.                
-        '''
+        ''' Update the visual representation of the environment. '''
         assert self.display is not None, "No display available"
+
         fig, ax, im = self.display
 
         # Clear the numbers
@@ -319,9 +310,7 @@ class Minesweeper():
         plt.draw()
 
     def print_env(self):
-        '''
-            Print a visual representation of the environment.                
-        '''
+        ''' Print a visual representation of the environment. '''
         print()
         print("\t\t\tMINESWEEPER\n")
     
