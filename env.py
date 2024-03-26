@@ -118,6 +118,11 @@ class Minesweeper():
         else:
             A = np.where(self.O > -2)
             return list(zip(A[0], A[1]))
+        
+    def get_covered_cells_int(self, covered=True):
+        ''' same as previous but with int index and not tupple '''
+        res = self.get_covered_cells(covered)
+        return [tupple2int(x, self.n_cols) for x in res]
 
     def get_neighbors(self, a):
         ''' utility function: get all adjacent tiles, including diagonals
