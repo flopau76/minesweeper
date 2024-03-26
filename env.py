@@ -140,6 +140,11 @@ class Minesweeper():
             if a >= 0 and a < self.n_rows and b >= 0 and b < self.n_cols:
                 res.append((a,b))
         return res
+    
+    def get_neighbors_int(self, a):
+        ''' same as previous but with int index and not tupple '''
+        res = self.get_neighbors(a)
+        return [tupple2int(x, self.n_cols) for x in res]
 
     def get_value(self, a):
         ''' utility function: get the value of a tile
