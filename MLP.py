@@ -10,7 +10,7 @@ working principle:
     -success rate
     -computation time
 """
-
+import collections
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -19,11 +19,13 @@ import env
 
 import torch
 import torch.nn as nn
+from torch.optim.lr_scheduler import _LRScheduler
 
 from tqdm import tqdm
 import itertools
 
 import time
+import datetime
 
 import os
 
@@ -35,22 +37,33 @@ NN_L2 = 128 # neurons in the second layer
 NN_L3 = 128 # neurons in the third layer
 NN_L4 = 128 # neurons in the fourth layer
 
-MIN_PROBA = 0.05 # probability under which select a random cell instead of border cell
+MIN_PROBA = 1e-5 # probability under which select a random cell instead of border cell
 
 GUESS_REWARD = -1 # randomly guessed the next play
 CONTINUE_REWARD = 1 # the reward gained each turn
 LOSS_REWARD = -50   # the reward if we lose the game
 WIN_REWARD = 50    # the reward if we won the game
 
-EPSILON_START = 0.9   # the initial epsilon value
-EPSILON_MIN = 0.05    # the minimum epsilon value
-EPSILON_DECAY = 0.999 # the decay epsilon value
+EPSILON_START = 0.95   # the initial epsilon value
+EPSILON_MIN = 0.01    # the minimum epsilon value
+EPSILON_DECAY = 0.99975 # the decay epsilon 
 
-NUM_EPISODES = 1000000 # the number of episode per training
-GAMMA = 0.9 # the gamma value for QLearning
+LR_LAST_EPOCH = -1
+LR_START = 0.001
+LR_MIN = 1e-6
+LR_DECAY = 0.9999
+
+NUM_EPISODES = 1000 # the number of episode per training
+GAMMA = 0.99 # the gamma value for QLearning
+TARGET_NETWORK_SYNC_PERIOD = 5
+BATCH_SIZE = 64
+
+REPLAY_BUFFER_CAPACITY = 1000*BATCH_SIZE
+MIN_REPLAY_BUFFER_SIZE = 10*BATCH_SIZE
 
 NUM_TRAININGS = 1 # the number of trainings
-LR = 0.001 # the learning rate
+NUM_TESTS = 100 # the number of tests
+
 # ------------------
 
 class MLPModel(nn.Module):
@@ -65,7 +78,7 @@ class MLPModel(nn.Module):
         layer4: The fourth linear layer followed by ReLU activation
         layer5: The fifth linear layer followed by Sigmoid activation
     '''
-    def __init__(self, n_observations, nn_l1=NN_L1, nn_l2=NN_L2, nn_l3=NN_L3, nn_l4=NN_L4):
+    def __init__(self, n_observations=25, nn_l1=NN_L1, nn_l2=NN_L2, nn_l3=NN_L3, nn_l4=NN_L4):
         super(MLPModel, self).__init__()
 
         self.layer1 = nn.Sequential(
@@ -93,7 +106,7 @@ class MLPModel(nn.Module):
             nn.Sigmoid()
         )
 
-    def forward(self, x, mask):
+    def forward(self, x):
         '''Forward pass for the Neural Network'''
         batch_size = x.size(0)
         x = self.layer1(x)
@@ -101,96 +114,115 @@ class MLPModel(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
         x = self.layer5(x)
-        x = x*mask
         return x.squeeze(0)
 
 
 class EpsilonGreedy():
-    '''
-        Implements an epsilon greedy algorithm
-
-        Properties
-        ----------
-        model: The current model
-        epsilon: The current epsilon value
-        epsilon_min: The minimum epsilon value
-        epsilon_decay: The epsilon decay value
-    '''
-    def __init__(self, model, device, epsilon_start=EPSILON_START, epsilon_min=EPSILON_MIN, epsilon_decay=EPSILON_DECAY):
+    def __init__(self, envWrapper, q_network, epsilon_start=EPSILON_START, epsilon_min=EPSILON_MIN, epsilon_decay=EPSILON_DECAY):
         self.epsilon = epsilon_start
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
-        self.model = model
-        self.device = device
+        self.envWrapper = envWrapper
+        self.q_network = q_network
+        self.device = self.envWrapper.device
 
-    def get_random_cell(self, game):
-        ''' Chose a random cell to uncover'''
-        A = game.get_covered_cells(covered=True)
-        a = random.choice(A)
-        return a
-
-    def __call__(self, border_mask, state, game):
-        '''Caller for the epsilon greedy algorithm'''
-        val = np.random.rand()
-        if(val < self.epsilon or state.size == 0): # if first step return random action
-            action = self.get_random_cell(game)
-            return action, True
-
-        state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device)
-        values = self.model(x=state_tensor, mask=border_mask)
-        if torch.max(values) < MIN_PROBA:
-            action = self.get_random_cell(game)
-            return action, True
-        index = torch.argmax(values)
-        # print("values: ", values)
-        # print("index: ", index)
-        # print("state: ", state)
-        # print("mask: ", border_mask)
-        action = env.int2tupple(index.item(), game.n_cols)
-        # print("action: ", action)
-        return action, False
+    def __call__(self, state):
+        if np.random.random() < self.epsilon:
+            action = self.envWrapper.get_random_cell()
+        else:
+            state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device)
+            uncovered_cells = self.envWrapper.get_uncovered_cells()
+            q_values = self.q_network(state_tensor).detach().cpu().numpy().flatten()
+            q_values[uncovered_cells] = -np.inf  # Set invalid actions to -inf
+            action = np.argmax(q_values)
+        return action
 
     def decay_epsilon(self):
-        '''Update epsilon's value'''
-        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)        
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+
+
+class MinimumExponentialLR(torch.optim.lr_scheduler.ExponentialLR):
+    def __init__(self, optimizer: torch.optim.Optimizer, lr_decay: float = LR_DECAY, last_epoch: int = LR_LAST_EPOCH, min_lr: float = LR_MIN):
+        self.min_lr = min_lr
+        super().__init__(optimizer, lr_decay, last_epoch=last_epoch)
+
+    def get_lr(self) -> list[float]:
+        return [max(base_lr * self.gamma ** self.last_epoch, self.min_lr) for base_lr in self.base_lrs]
+
+
+class ReplayBuffer:
+    def __init__(self, capacity: int):
+        self.buffer = collections.deque(maxlen=capacity)
+
+    def add(self, state, action, reward, next_state, done):
+        self.buffer.append((state, action, reward, next_state, done))
+
+    def sample(self, batch_size: int):
+        states, actions, rewards, next_states, dones = zip(*random.sample(self.buffer, batch_size))
+        return np.array(states), actions, rewards, np.array(next_states), dones
+
+    def __len__(self):
+        return len(self.buffer)
 
 
 
-class NeuralNetworkStrategy():
-    '''
-        Implements the MLP strategy for minesweeper
+class MinesweeperEnvWrapper():
+    def __init__(self, difficulty="beginner"):
+        self.env = env.Minesweeper(difficulty)
+        self.state = self.preprocess_state()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.status = 0
+    
+    def reset(self):
+        self.env.reset()
+        self.state = self.preprocess_state()
+        return self.state
+    
+    def step(self, action):
+        bordering_cells = self.get_bordering_cells()
+        random = action in bordering_cells
+        status = self.env.take_action(action, uncover_neighbors=True)   
+        self.state = self.preprocess_state()
+        next_state = self.state
+        self.status = status
+        done = bool(status)
+        reward = self.reward(status, random)
+        return next_state, reward, done
+    
+    def reward(self, status, random):
+        if status == 0 and not random:  # if the model uncovers a safe tile
+            return CONTINUE_REWARD
+        elif status == 0:
+            return GUESS_REWARD
+        elif status == 1:  # if the model uncovers a mine
+            return LOSS_REWARD
+        elif status == 2:  # if the model wins
+            return WIN_REWARD
+        else:
+            raise ValueError("Invalid status")
 
-        Properties
-        ----------
-        verbose: The verbosity level
-        env: Minesweeper
-    '''
-    def __init__(self, verbose=1):
-        self.verbose = verbose
-        self.reset_env()
+    def get_covered_cells(self):
+        return self.env.get_covered_cells_int(covered=True)
 
-    def reset_env(self, game=None):
-        '''Reset the environment'''
-        if game is None:
-            game = env.Minesweeper("beginner", display=False) # train on beginner mode
-        self.env = game
+    def get_uncovered_cells(self):
+        return self.env.get_covered_cells_int(covered=False)
 
-    def get_bordering_cells(self, device):
-        '''Get a mask for the bordering cells of uncovered cells'''
-        border = np.zeros(self.env.O.shape)
-        uncovered = self.env.get_covered_cells(covered=False)
-        for cell in uncovered:
-            neigbhors = self.env.get_neighbors(cell)
-            for (i,j) in neigbhors:
-                if self.env.O[i,j] == -2: # covered tile
-                    border[i,j] = 1
-        
-        border = torch.tensor(border, dtype=torch.float32, device=device)
-        border = border.view(-1).unsqueeze(1)
-        return border
+    def get_random_cell(self):
+        ''' Chose a random cell to uncover'''
+        all_covered_cells = self.get_covered_cells()
+        action = random.choice(all_covered_cells)
+        return action
+    
+    def preprocess_state(self):
+        """Transform the observed grid into a 9xheightxwidth array which will be used as input to the CNN.
 
+        Returns:
+           np.ndarray: Tensor of shape (24, height, width) where each channel represents a different tile value.
+        """
+        return self.get_state()
+    
     def get_5x5_neighborhood(self, cell):
-        '''Get a list of exactly 25 neighbors id (put a tuple (-1,-1) if it is not a valid cell)'''
+        '''Get a list of exactly 24 neighbors id (put a tuple (-1,-1) if it is not a valid cell)'''
         if type(cell) == tuple:
             i, j = cell
         else:
@@ -198,7 +230,7 @@ class NeuralNetworkStrategy():
         adj = [
                 (i-2, j-2), (i-2, j-1), (i-2, j), (i-2, j+1), (i-2, j+2),
                 (i-1, j-2), (i-1, j-1), (i-1, j), (i-1, j+1), (i-1, j+2),
-                (i, j-2), (i, j-1), (i, j+1), (i, j+2),
+                (i, j-2), (i, j-1), (i,j), (i, j+1), (i, j+2),
                 (i+1, j-2), (i+1, j-1), (i+1, j), (i+1, j+1), (i+1, j+2),
                 (i+2, j-2), (i+2, j-1), (i+2, j), (i+2, j+1), (i+2, j+2)
             ]
@@ -210,254 +242,211 @@ class NeuralNetworkStrategy():
                 res.append((-1,-1))
         return res
 
-    def get_random_cell(self):
-        ''' Chose a random cell to uncover'''
-        A = self.env.get_covered_cells(covered=True)
-        a = random.choice(A)
-        return a
-
     def convert_cells_to_feature(self, cell_list):
         '''
         get the features from the list of cell
-        
         params:
             cell_list: a list of 24 neighbors
-
         return 
             the observations of the cells (or -5 if the cell doesn't exist)
         '''
-        # divide by 8 to be in [-1, 1]
-        arr = np.array([self.env.O[i,j] / 8 if (not i==-1 and not j==-1) else -5 for (i,j) in cell_list])
+        arr = np.array([self.env.O[i,j] if (not i==-1 and not j==-1) else -5 for (i,j) in cell_list])
         return arr
 
-    def get_state(self, device):
+    def get_bordering_cells(self):
+        '''Get a mask for the bordering cells of uncovered cells'''
+        border = []
+        uncovered = self.env.get_covered_cells(covered=False)
+        for cell in uncovered:
+            neigbhors = self.env.get_neighbors(cell)
+            for (i,j) in neigbhors:
+                if self.env.O[i,j] == -2: # covered tile
+                    border.append(env.tupple2int((i,j), self.env.n_cols))
+        
+        return border
+
+    def get_state(self):
         '''
         get the current state of the environment
-
         return:
             bordering_cells: the cells we want to uncover
             state: the features to represent these cells
         '''
-        bordering_cells = self.get_bordering_cells(device)
         all_cells = [(i,j) for i in range(self.env.n_rows) for j in range(self.env.n_cols)]
         state = np.array([self.convert_cells_to_feature(self.get_5x5_neighborhood(cell)) for cell in all_cells])
-        return bordering_cells, state
+        state = (state + 5.) / (8. + 5.) # [0,1]
+        return state
 
-    def get_reward(self, over, random):
-        '''Get the reward given the `over' state'''
-        reward = 0
-        if over == 0 and random: # random guess
-            reward = GUESS_REWARD
-        elif over == 0: # found good uncovered cell
-            reward = CONTINUE_REWARD
-        elif over == 1: # loss
-            reward = LOSS_REWARD
-        elif over == 2: # win
-            reward = WIN_REWARD
-        return reward
+class MLP_Solver():
+    def __init__(self, envWrapper: MinesweeperEnvWrapper, q_network: MLPModel, target_network: MLPModel):
+        self.envWrapper = envWrapper
+        self.q_network = q_network
+        self.target_network = target_network
+        self.device = self.envWrapper.device
 
-    def train_model_episode(self, model, epsilon_greedy, optimizer, loss_fn, device, num_episodes=NUM_EPISODES, gamma=GAMMA, print_every=500):
-        '''One training'''
+    def train_agent(
+            self, 
+            optimizer: torch.optim.Optimizer, 
+            loss_fn: callable, 
+            policy: EpsilonGreedy, 
+            lr_scheduler: _LRScheduler, 
+            replay_buffer: ReplayBuffer,
+            num_episodes: int = NUM_EPISODES, 
+            gamma: float = GAMMA, 
+            target_network_sync_period: int = TARGET_NETWORK_SYNC_PERIOD,
+            print_every: int = 500,
+            batch_size: int = BATCH_SIZE
+    ) -> tuple[list[float]]:
         episode_reward_list = []
         episode_loss_list = []
         mean_reward = 0
         mean_loss = 0
 
-        # for episode_index in tqdm(range(1, num_episodes)):
-        for episode_index in range(1, num_episodes+1):
-            self.reset_env(game = None)
-            bordering_cells, state = self.get_state(device)
+        for i in range(1, num_episodes):
+            state = self.envWrapper.reset()
             episode_reward = 0
             episode_loss = 0
             time_episode = 0
-            loss = torch.tensor(0.0, device=device)
+            done = False
 
-            over = 0
-            while(over == 0):
+            while not done:
                 time_episode += 1
-                action, random_guess = epsilon_greedy(bordering_cells, state, self.env)
-                over = self.env.take_action(action, uncover_neighbors=False)
-                reward = self.get_reward(over, random_guess)
-                
+                action = policy(state)
+                next_state, reward, done = self.envWrapper.step(action)
                 episode_reward += reward
-                next_bordering_cells, next_state = self.get_state(device)
 
-                if(not state.size == 0): # not empty state
-                    state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
-                    next_state_tensor = torch.tensor(next_state, dtype=torch.float32, device=device)
-                    reward_tensor = torch.tensor(reward, dtype=torch.float32, device=device)
+                if len(replay_buffer.buffer) >= replay_buffer.buffer.maxlen:
+                    replay_buffer.buffer.pop()
 
-                    with torch.no_grad():
-                        values_next = model(x=next_state_tensor, mask=next_bordering_cells)
-                        max_value_next = torch.max(values_next)
-                        target_value = reward_tensor + gamma * max_value_next
-
-                    values = model(x=state_tensor, mask=bordering_cells)
-                    predicted_value = torch.max(values)
-
-                    loss = loss_fn(predicted_value, target_value)
-                    episode_loss += loss.item()
-
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-
-                    mean_loss += loss.item() / print_every
-
+                replay_buffer.add(state, action, reward, next_state, done)
                 state = next_state
-                bordering_cells = next_bordering_cells
 
+            if len(replay_buffer) >= MIN_REPLAY_BUFFER_SIZE:  # Start training after the replay buffer has been filled with enough samples
+                replayed_states, replayed_actions, replayed_rewards, replayed_next_states, replayed_dones = replay_buffer.sample(batch_size)
+
+                replayed_states_tensor = torch.tensor(replayed_states, dtype=torch.float32, device=self.device)
+                replayed_actions_tensor = torch.tensor(replayed_actions, dtype=torch.int64, device=self.device)
+                replayed_rewards_tensor = torch.tensor(replayed_rewards, dtype=torch.float32, device=self.device)
+                replayed_next_states_tensor = torch.tensor(replayed_next_states, dtype=torch.float32, device=self.device)
+                replayed_dones_tensor = torch.tensor(replayed_dones, dtype=torch.float32, device=self.device)
+
+                with torch.no_grad():
+                    replayed_next_q_values = self.target_network(replayed_next_states_tensor).squeeze()
+                replayed_targets_tensor = replayed_rewards_tensor + gamma * torch.max(replayed_next_q_values, dim=1).values * (1-replayed_dones_tensor)
+                replayed_q_values = self.q_network(replayed_states_tensor).squeeze()
+
+                replayed_results = np.zeros(BATCH_SIZE)
+                for j in range(BATCH_SIZE):
+                    replayed_results[j] = replayed_q_values[j][replayed_actions_tensor[j]]
+                replayed_results_tensor = torch.tensor(replayed_results, dtype=torch.float32, device=self.device, requires_grad=True)
+                loss = loss_fn(replayed_results_tensor, replayed_targets_tensor)
+
+                episode_loss += loss.item()
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                lr_scheduler.step()
+            
+                mean_loss += loss.item() / print_every
             mean_reward += episode_reward / print_every
+            
+            if i % target_network_sync_period == 0:
+                self.target_network.load_state_dict(self.q_network.state_dict())
 
-            if episode_index % print_every == 0:
-                print(f"episode: {episode_index}, Mean reward: {mean_reward}, Mean loss: {mean_loss}, Epsilon: {epsilon_greedy.epsilon}" 
-                )
+            if i % print_every == 0:
+                print(f"Episode: {i}, Mean reward: {mean_reward}, Epsilon: {policy.epsilon}, LR: {lr_scheduler.get_lr()[0]}, Mean loss: {mean_loss}")
                 mean_reward = 0
                 mean_loss = 0
-
+            
             episode_reward_list.append(episode_reward)
             episode_loss_list.append(episode_loss / time_episode)
-            epsilon_greedy.decay_epsilon()
+            policy.decay_epsilon()
 
         return episode_reward_list, episode_loss_list
 
 
+    def test_agent(self, num_tests: int = NUM_TESTS) -> list[int]:  
+        episode_reward_list = []
+        nb_wins = 0
 
-    def train_model(self, device, save_file, number_of_trainings=NUM_TRAININGS, lr=LR):
-        '''Completely train the model'''
-        trains_result_list = [[], []] # [0] -> reward list, [1] -> loss list
-        model = 0
+        for _ in range(num_tests):
+            state = self.envWrapper.reset()
+            done = False
+            episode_reward = 0
 
-        for train_index in range(number_of_trainings):
-            model = MLPModel(n_observations=24).to(device)
-            optimizer = torch.optim.AdamW(model.parameters(), lr=lr, amsgrad=True)
-            loss_fn = torch.nn.MSELoss()
+            while not done:
+                # Convert the state to a PyTorch tensor and add a batch dimension (unsqueeze)
+                with torch.no_grad():
+                    state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device)
+                    q_values = self.q_network(state_tensor).detach().cpu().numpy().flatten()
 
-            epsilon_greedy = EpsilonGreedy(model=model, device=device)
+                uncovered_cells = self.envWrapper.get_uncovered_cells()
+                q_values[uncovered_cells] = -np.inf  # Set invalid actions to -inf
 
-            episode_reward_list, episode_loss_list = self.train_model_episode(
-                model=model, 
-                epsilon_greedy=epsilon_greedy, 
-                optimizer=optimizer, 
-                loss_fn=loss_fn, 
-                device=device
-            )
+                action = np.argmax(q_values)  # Choose the action with the highest Q-value - greedy policy           
+                next_state, reward, done = self.envWrapper.step(action)               
+                state = next_state
+                episode_reward += reward
+            
+            if self.envWrapper.status == 2:
+                nb_wins += 1
 
-            # trains_result_list[0].extend(range(len(episode_reward_list)))
-            trains_result_list[0].append(episode_reward_list)
-            trains_result_list[1].append(episode_loss_list)
-            # trains_result_list[3].extend([train_index for _ in episode_reward_list])
-
-        # naive_trains_result_df = pd.DataFrame(np.array(trains_result_list).T, columns=["num_episodes", "mean_final_episode_reward", "training_index"])
-        # naive_trains_result_df["agent"] = "Naive"
-
-        # Save the action-value estimation function of the last train
-        torch.save(model, save_file)
-        self.model = model
-        return trains_result_list
-
-    def uncover_cell(self, cell):
-        ''' Uncover a cell'''
-        over = self.env.take_action(cell, uncover_neighbors=False)
-        if self.verbose >=2:
-            self.env.update_display()
-            plt.waitforbuttonpress()
+            episode_reward_list.append(episode_reward)
+            # print(f"Episode reward: {episode_reward}")
         
-        return over
-
-    def solve(self, device):
-        ''' Solve the game'''
-        over = False
-        while not over:
-            bordering_cells, state = self.get_state(device)
-
-            action = self.get_random_cell()
-            if(state.size > 0):
-                state_tensor = torch.tensor(state, dtype=torch.float32, device=device)
-                values = self.model(x=state_tensor, mask=bordering_cells)
-                max_value = torch.max(values)
-                if(max_value < MIN_PROBA):
-                    action = self.get_random_cell()
-                else:
-                    index = torch.argmax(values)
-                    action = env.int2tupple(index.item(), self.env.n_cols)
-
-            over = self.uncover_cell(action)
-                
-        # self.env.show_mines()
-        # self.env.print_env()
-        # self.env.update_display()
-        # if over == 1:
-        #     print("You lost")
-        # elif over == 2:
-        #     print("You won")
-        return over
+        print(f"MLP strategy: {nb_wins / num_tests} wins on average ({nb_wins} / {num_tests})")
+        return episode_reward_list
 
 
-def load_or_train_model(solver, device, number_of_trainings=NUM_TRAININGS, lr=LR, force_retrain=False, verbose=0):
+
+def load_or_train_model(solver, force_retrain=False, verbose=0):
     '''Helper function to check if the model must be trained or loaded from a file'''
-    model_file = "first_mlp.pth"
+    current_time = datetime.datetime.now()
+    model_file = current_time.strftime("%Y-%m-%d_%H-%M-%S.pth")
 
     if (not force_retrain) and (os.path.isfile(model_file)):
         print("Loading pre-trained model...")
-        solver.model = torch.load(model_file, map_location=device)
-    else:
-        print("Training new model...")
-        trains_result_list = solver.train_model(device=device, save_file=model_file, number_of_trainings=number_of_trainings, lr=lr)
+        solver.model = torch.load(model_file, map_location=solver.device)
+        return
+    
+    print("Training new model...")
+    optimizer = torch.optim.Adam(q_network.parameters(), lr=LR_START)
+    loss_fn = nn.MSELoss()
+    epsilon_greedy = EpsilonGreedy(envWrapper=envWrapper, q_network=q_network)
+    lr_scheduler = MinimumExponentialLR(optimizer)
+    buffer = ReplayBuffer(capacity=REPLAY_BUFFER_CAPACITY)
 
-        if verbose > 1:
-            # Plot losses and rewards for each training run
-            num_episodes = len(trains_result_list[0][0])  # Get the number of episodes from the first training
-            num_trainings = len(trains_result_list[0])
+    episode_reward_list, episode_loss_list = solver.train_agent(
+        optimizer=optimizer, 
+        loss_fn=loss_fn, 
+        policy=epsilon_greedy, 
+        lr_scheduler=lr_scheduler, 
+        replay_buffer=buffer
+    )
+    torch.save(solver.q_network, model_file)
 
-            # Plot rewards
-            plt.figure(figsize=(12, 6))
-            for i in range(num_trainings):
-                plt.plot(range(num_episodes), trains_result_list[0][i], label=f"Training {i+1}")
-            plt.xlabel("Episode")
-            plt.ylabel("Reward")
-            plt.title("Rewards per Episode")
-            plt.legend()
-            plt.show()
-
-            # Plot losses
-            plt.figure(figsize=(12, 6))
-            for i in range(num_trainings):
-                plt.plot(range(num_episodes), trains_result_list[1][i], label=f"Training {i+1}")
-            plt.xlabel("Episode")
-            plt.ylabel("Loss")
-            plt.title("Losses per Episode")
-            plt.legend()
-            plt.show()
-
-    return
 
 
 if __name__ == "__main__":
-    solver = NeuralNetworkStrategy(verbose=0)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # Set the device to CUDA if available, otherwise use CPU
-    print("device: ", device)
-    
+    envWrapper = MinesweeperEnvWrapper(difficulty="beginner")
+    q_network = MLPModel().to(envWrapper.device)
+    target_network = MLPModel().to(envWrapper.device)
+
+    solver = MLP_Solver(envWrapper, q_network, target_network)
+
     # train the model multiple times to get the time in average
     sum_times = 0
-    nb_retrainings = 1
-    for _ in range(nb_retrainings):
+    for _ in range(NUM_TRAININGS):
         tic = time.perf_counter()
-        load_or_train_model(solver=solver, device=device, force_retrain=True, verbose=0)
+        load_or_train_model(solver=solver, force_retrain=True)
         toc = time.perf_counter()
         cur_time = toc - tic
         print(f"Trained the model in {toc - tic:0.4f} seconds")
         sum_times += cur_time
-    print(f"Training {nb_retrainings} models in {(sum_times / nb_retrainings):0.4f} seconds on average")
+    print(f"Training {NUM_TRAININGS} models in {(sum_times / NUM_TRAININGS):0.4f} seconds on average")
     
     # test the model multiple times to get the winrate
-    nb_tests = 100
     nb_wins = 0
-    for _ in range(nb_tests):
-        solver.reset_env(game = env.Minesweeper("beginner", display=True)) # select the grid to try on
-        over = solver.solve(device=device)
-        if over == 2:
-            nb_wins += 1
-    
-    print(f"MLP strategy: {nb_wins / nb_tests} wins on average ({nb_wins} / {nb_tests})")
+    over = solver.test_agent()    
     print()
