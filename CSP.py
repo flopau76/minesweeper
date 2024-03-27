@@ -18,7 +18,7 @@ Some times, nothing can be deduced with certainty. In this case, we select one o
     - S: Smart: we compute all possible solutions for tha constraints and chose the cell with the lowest mine probability
 Smart divide the constraints into independent subsets and solve each subset separately via backtracking by checking all possible configurations.
 If a subset is to big (see beginner with seed 28 or 29), smart won't work (backtracking exponential in the size of the subset)
-TODO: fix this ?
+TODO: how to improve this ?
 
 TODO: replace random guess with different strategies
     - chose a random cell
@@ -251,9 +251,19 @@ class Constraint_satisfaction_strategy():
                     i += 1
             return subsets
     
+        def check_feasibility(constraints):
+            ''' Check if the constraints are feasible (ie no contradiction)'''
+            for const in constraints:
+                if const.value < 0 or const.value > len(const.cells):
+                    return False
+            return True
+
         def suppress_single_constraints(constraints, X):
             ''' Remove single constraints (only one cell concerned)
             Instead of modifiying the game, we store the change in X '''
+            feasibility = check_feasibility(constraints)
+            if not feasibility:
+                return False
             i = 0
             while i < len(constraints):
                 if len(constraints[i].cells) == 1:
@@ -264,7 +274,8 @@ class Constraint_satisfaction_strategy():
                         X[cell] = 0
                     elif const.value == 1:
                         X[cell] = 1
-                    else: # game is not feasible
+                    else: # game is not feasible: should not happen
+                        raise ValueError("Game is not feasible")
                         return False
                 i += 1
             return True
@@ -279,16 +290,17 @@ class Constraint_satisfaction_strategy():
                 res_dict with values(array): the sum of those configurations (total nb of mine per cell)
             '''
             var_set, constraints = subset
-            
-            # find a non-fixed variable
-            x_min = -1
-            for x in var_set:
-                if X[x] < 0:
-                    x_min = x
-                    break
+
+            # get the variable with the most constraints
+            Y = np.zeros(len(X))
+            for const in constraints:
+                for cell in const.cells:
+                    Y[cell] += 1
+            Y = Y*(X<0)
+            x_min = np.argmax(Y)
             
             # if all variables are fixed
-            if x_min == -1:
+            if Y[x_min] == 0:
                 feasible = suppress_single_constraints(constraints, X)
                 if feasible:
                     X = X*(X>0)
@@ -364,8 +376,7 @@ class Constraint_satisfaction_strategy():
                 if n_min <= count <= n_max:
                     Configs.append(config.copy())
             return Configs
-
-
+        
         # initialising game representation with current state
         # X contains -1 if covered, 0 if no mine, 1 if mine
         X = - np.ones(self.game.n_rows * self.game.n_cols, dtype=int)
@@ -385,14 +396,18 @@ class Constraint_satisfaction_strategy():
             for cell in const.cells:
                 mask_constraints[cell] = 1
 
-        if self.verbose>=1: print("COMPUTING subsets")
+        # very special case where all constraints disappeared (ex: after uncovering a 3 in a corner)
+        if len(self.constraints) == 0:
+            return [(np.random.choice(np.where(mask_covered==1)[0], 1, replace=False)[0], False)]
+
         # dividing the constraints into independent subsets
+        if self.verbose>=1: print("COMPUTING subsets")
         subsets = divide_constraints(self.constraints)
         n_subsets = len(subsets)
 
-        if self.verbose>=1: print("SOLVING the subsets")
         # solving each subset independently
         # the solutions for each subset are grouped depending on the number of mines used
+        if self.verbose>=1: print("SOLVING the subsets")
         N_mines = []
         N_sol = []
         Sol = []
@@ -403,7 +418,9 @@ class Constraint_satisfaction_strategy():
             Sol.append([res_dict[key] for key in N_mines[-1]])
             if self.verbose>=1:
                 for key in n_dict.keys():
-                    if self.verbose>=1: print(f"     {key} mines: {n_dict[key]} configurations: {res_dict[key]}")
+                    if self.verbose>=1:
+                        print(f"     {key} mines: {n_dict[key]} configurations:")
+                        print(res_dict[key].reshape(self.game.n_rows, self.game.n_cols).astype(int))
         
         # counting the remaining mines
         n_remaining = self.game.n_mines
@@ -417,7 +434,6 @@ class Constraint_satisfaction_strategy():
         # combining the different subsets
         XX = np.zeros(len(X))
         total_solutions = 0
-        average_n_mines = 0
         for config in Configs:
             # number of solutions in this configuration
             prod_sol = 1
@@ -426,14 +442,12 @@ class Constraint_satisfaction_strategy():
                 prod_sol *= N_sol[i][config[i]]
                 sum_mines += N_mines[i][config[i]]
             total_solutions += prod_sol
-            average_n_mines += sum_mines*prod_sol
             # adding the configuration to the total
             for i in range(n_subsets):
                 XX += Sol[i][config[i]]*prod_sol/N_sol[i][config[i]]
         if self.verbose>=1:
             print("     total possible configurations: ", total_solutions)
             print(XX.astype(int).reshape(self.game.n_rows, self.game.n_cols))
-        average_n_mines /= total_solutions
 
         # checking if we have a trivial solution:
         res = []
@@ -448,17 +462,12 @@ class Constraint_satisfaction_strategy():
         XX = XX * mask_constraints + total_solutions * (1-mask_constraints)
         best_guess = np.argmin(XX)
         best_p = np.min(XX)/total_solutions
-        # average_p = n_remaining / np.sum(mask_covered)    # randomly guessing among all the covered cells
-        unconstrained_cells = sum(mask_covered-mask_constraints)
-        if unconstrained_cells == 0:
-            average_p = 1
-        else:
-            average_p = (n_remaining-average_n_mines) / unconstrained_cells # randomly guessing among the unconstrained cells
+        average_p = n_remaining / np.sum(mask_covered)
 
         if self.verbose>=1:
-            print(f"     best_guess: {env.int2tupple(best_guess, self.game.n_cols)} with p={best_p} versus {average_p} average_p")
+            print(f"     best_guess: {env.int2tupple(best_guess, self.game.n_cols)} with p={best_p} versus average_p={average_p}")
 
-        if best_p < average_p:
+        if best_p <= average_p:
             return [(best_guess, False)]
         
         else:
@@ -512,17 +521,20 @@ H[1,2] = 1
 H[2,1] = 1
 
 
-if __name__ == "__main1__":
+if __name__ == "__main__":
         
-    solver = Constraint_satisfaction_strategy(game="beginner", verbose=2, choice="S", seed=29)
+    solver = Constraint_satisfaction_strategy(game="intermediate", verbose=2, choice="S", seed=2)
     solver.solve()
 
 if __name__ == "__main__":
     wins = 0
-    for i in range(28):
+    for i in range(1,100):
         print(i)
-        solver = Constraint_satisfaction_strategy(game="beginner", verbose=0, choice="S", seed=i)
+        solver = Constraint_satisfaction_strategy(game="intermediate", verbose=0, choice="S", seed=i)
         over = solver.solve()
         if over == 2:
             wins += 1
     print(f"Win rate: {wins}/28")
+
+# beginner
+#33 (max subset = 12), 53 (size subset=9), 66 (size=9), 80 (size=8)
