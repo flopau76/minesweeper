@@ -47,7 +47,7 @@ class Minesweeper():
         visual representation of the environments
     '''
  
-    def __init__(self, game="beginner", display=False):
+    def __init__(self, game="beginner", display=False, seed=None):
         ''' Initialize the environment.
             
             Parameters
@@ -61,11 +61,11 @@ class Minesweeper():
         '''
         if type(game) == str:
             if game == "beginner":
-                self.__init__((8, 8, 10), display)
+                self.__init__((8, 8, 10), display, seed)
             elif game == "intermediate":
-                self.__init__((16, 16, 40), display)
+                self.__init__((16, 16, 40), display, seed)
             elif game == "expert":
-                self.__init__((16, 30, 99), display)
+                self.__init__((16, 30, 99), display, seed)
             else:
                 raise ValueError("Invalid game: string not known")
             return None
@@ -75,6 +75,8 @@ class Minesweeper():
             self.n_rows, self.n_cols, self.n_mines = game
             # Generate a random grid with mine locations
             G = np.zeros((self.n_rows, self.n_cols), dtype=bool)
+            if seed is not None:
+                np.random.seed(seed)
             mines = np.random.choice(self.n_rows*self.n_cols, self.n_mines, replace=False)
             for mine in mines:
                 i, j = int2tupple(mine, self.n_cols)
@@ -327,7 +329,7 @@ class Minesweeper():
         # row numbers
         st = "   "
         for i in range(self.n_cols):
-            st = st + "     " + str(i)
+            st = st + '{:6}'.format(i)
         print(st)   
     
         for r in range(self.n_rows):
@@ -345,7 +347,7 @@ class Minesweeper():
             print(st + "|")
             
             # second line with line number and content
-            st = "  " + str(r ) + "  "
+            st = '{:4}'.format(r) + " "
             for col in range(self.n_cols):
                 if self.O[r,col] != -2:
                     if self.O[r,col] == -3:
