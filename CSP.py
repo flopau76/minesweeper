@@ -17,10 +17,8 @@ Some times, nothing can be deduced with certainty. In this case, we select one o
     - UI: user Input: the user indicates wich cell to uncover
     - S: Smart: we compute all possible solutions for tha constraints and chose the cell with the lowest mine probability
 Smart divide the constraints into independent subsets and solve each subset separately via backtracking by checking all possible configurations.
-If a subset is to big (see beginner with seed 28 or 29), smart won't work (backtracking exponential in the size of the subset)
-TODO: how to improve this ?
 
-TODO: replace random guess with different strategies
+TODO: replace random guess with different strategies and compare them
     - chose a random cell
     - chose a corner/edge cell
     - chose a cell with overlapping constraints
@@ -34,12 +32,11 @@ import random
 import env
 
 class Constraint():
-    def __init__(self, value=0, cells:Union[None,list]=None):
+    def __init__(self, value=0, cells:Union[None,set]=None):
         self.value = value
         if cells is None:
-            self.cells = []
-        self.cells = cells
-        self.cells.sort()
+            self.cells = set()
+        self.cells = set(cells)
 
     def __eq__(self, constraint: Constraint) -> bool:
         ''' Two constraints are equal if they have the same value and the same cells'''
@@ -47,34 +44,17 @@ class Constraint():
     
     def __ge__(self, constraint: Constraint) -> bool:
         ''' Partial order: A>=B if B.cells included in A.cells'''
-        if len(self.cells) < len(constraint.cells):
-            return False
-        i=0; j=0
-        while i<len(self.cells) and j<len(constraint.cells):
-            if self.cells[i] == constraint.cells[j]:
-                i+=1
-                j+=1
-            else:
-                i+=1
-        return j==len(constraint.cells)
+        return len(constraint.cells)>0 and self.cells >= constraint.cells
 
     def __sub__(self, constraint: Constraint) -> Union[Constraint, None]:
         ''' if A >= B, we can do A-B = ( value.A-value.B, cells.A\cells.B ) '''
-        new_cells = []
-        i=0; j=0
-        while i<len(self.cells) and j<len(constraint.cells):
-            if self.cells[i] == constraint.cells[j]:
-                i+=1
-                j+=1
-            else:
-                new_cells.append(self.cells[i])
-                i+=1
-        if j<len(constraint.cells):
-            return None # the constraint is not included in the current one
-        while i<len(self.cells):
-            new_cells.append(self.cells[i])
-            i+=1
-        return Constraint(self.value-constraint.value, new_cells)
+        return Constraint(self.value-constraint.value, self.cells-constraint.cells)
+
+    def __isub__(self, constraint: Constraint) -> Union[Constraint, None]:
+        ''' in place substraction '''
+        self.value -= constraint.value
+        self.cells -= constraint.cells
+        return self
     
     def __str__(self):
         return "Value: "+str(self.value)+", Cells: "+str(self.cells)
@@ -118,17 +98,19 @@ def simplify_constraints(constraints):
                 j += 1
             i += 1
             j = i+1 
+        count += 1
     return None
 
 
 class Constraint_satisfaction_strategy():
     ''' Implements constraint satisfaction strategy for minesweeper'''
-    def __init__(self, game="beginner", verbose=1, choice="S", seed=None):
+    def __init__(self, game="beginner", verbose=1, choice="S", corner=False, seed=None):
 
         self.game = env.Minesweeper(game, display=(verbose>=2), seed=seed)
         self.constraints = []
         self.verbose = verbose
         self.seed = seed
+        self.corner = corner
 
         # choice of the cell when no action is possible with certainty
         choice_dict = {"R": ("Random", self.get_random_cell) , "UI": ("User Input", self.wait4input), 
@@ -205,12 +187,12 @@ class Constraint_satisfaction_strategy():
             if len(self.constraints[i].cells) == 1:
                 const = self.constraints.pop(i)
                 i -= 1
-                cell = const.cells[0]
+                cell = const.cells.pop()
                 if self.game.get_value(cell) == -2:
                     if const.value == 0:
                         over = self.uncover_cell(cell)
                     else:
-                        self.flag_cell(const.cells[0])
+                        self.flag_cell(cell)
             i += 1
         return over
 
@@ -269,7 +251,7 @@ class Constraint_satisfaction_strategy():
                 if len(constraints[i].cells) == 1:
                     const = constraints.pop(i)
                     i -= 1
-                    cell = const.cells[0]
+                    cell = const.cells.pop()
                     if const.value == 0:
                         X[cell] = 0
                     elif const.value == 1:
@@ -309,31 +291,29 @@ class Constraint_satisfaction_strategy():
                 else:
                     return {}, {}
                 
-            # x_min is not fixed: we fixed it to 0 and 1
-            # duplicating constraints and grid values
-            X_0 = X.copy()
-            X_1 = X.copy()
-            constraints_0 = []
-            constraints_1 = []
-            for const in constraints:
-                constraints_0.append(Constraint(const.value, const.cells.copy()))
-                constraints_1.append(Constraint(const.value, const.cells.copy()))
-                
             # trying to set x_min to 0
-            constraints_0.append(Constraint(0, [x_min]))
-            simplify_constraints(constraints_0)
-            feasible = suppress_single_constraints(constraints_0, X_0)
+            X_bis = X.copy()
+            constraints_bis = []
+            for const in constraints:
+                constraints_bis.append(Constraint(const.value, const.cells.copy()))
+            constraints_bis.append(Constraint(0, [x_min]))
+            simplify_constraints(constraints_bis)
+            feasible = suppress_single_constraints(constraints_bis, X_bis)
             if feasible:
-                n_dict, res_dict = solve_subset(X_0, (var_set,constraints_0))
+                n_dict, res_dict = solve_subset(X_bis, (var_set,constraints_bis))
             else:
                 n_dict, res_dict = {}, {}
 
             # trying to set x_min to 1
-            constraints_1.append(Constraint(1, [x_min]))
-            simplify_constraints(constraints_1)
-            feasible = suppress_single_constraints(constraints_1, X_1)
+            X_bis = X.copy()
+            constraints_bis = []
+            for const in constraints:
+                constraints_bis.append(Constraint(const.value, const.cells.copy()))
+            constraints_bis.append(Constraint(1, [x_min]))
+            simplify_constraints(constraints_bis)
+            feasible = suppress_single_constraints(constraints_bis, X_bis)
             if feasible:
-                n1_dict, res1_dict = solve_subset(X_1, (var_set, constraints_1))
+                n1_dict, res1_dict = solve_subset(X_bis, (var_set, constraints_bis))
                 for key in res1_dict.keys():
                     if key in res_dict:
                         n_dict[key] += n1_dict[key]
@@ -486,6 +466,8 @@ class Constraint_satisfaction_strategy():
         over = False
         over = self.uncover_cell(0) # wich cell to uncover first
         stack = []
+        if self.corner:
+            stack = [(0,0)]
         while not over:
             if not stack:
                 stack = self.chose_cell()
@@ -523,18 +505,15 @@ H[2,1] = 1
 
 if __name__ == "__main__":
         
-    solver = Constraint_satisfaction_strategy(game="intermediate", verbose=2, choice="S", seed=2)
+    solver = Constraint_satisfaction_strategy(game="beginner", verbose=2, choice="S", seed=33)
     solver.solve()
 
-if __name__ == "__main__":
+if __name__ == "__main1__":
     wins = 0
-    for i in range(1,100):
+    for i in range(100):
         print(i)
-        solver = Constraint_satisfaction_strategy(game="intermediate", verbose=0, choice="S", seed=i)
+        solver = Constraint_satisfaction_strategy(game="beginner", verbose=0, choice="S", seed=i)
         over = solver.solve()
         if over == 2:
             wins += 1
-    print(f"Win rate: {wins}/28")
-
-# beginner
-#33 (max subset = 12), 53 (size subset=9), 66 (size=9), 80 (size=8)
+    print(f"Win rate: {wins}/100")

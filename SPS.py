@@ -42,12 +42,15 @@ class single_point_strategy():
         self.verbose = verbose
 
         # choice of the cell when no action is possible with certainty
-        if choice == "R":
-            self.chose_cell = self.get_random_cell
-        elif choice == "I":
-            self.chose_cell = self.wait4input
-        else:
-            raise ValueError("Choice must be 'R' (random) or 'I' (user input)")
+        choice_dict = {"R": ("Random", self.get_random_cell) , "UI": ("User Input", self.wait4input)}
+        try:
+            self.choice = choice_dict[choice][0]
+            self.chose_cell = choice_dict[choice][1]
+        except KeyError:
+            string = "Choice must be in: "
+            for key, val in choice_dict.items():
+                string += key + " (" + val[0] + "), "
+            raise ValueError(string)
 
     def uncover_cell(self, cell):
         ''' Uncover a cell and add it and its neighbors to the stack'''
