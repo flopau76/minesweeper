@@ -37,32 +37,28 @@ NN_L2 = 128 # neurons in the second layer
 NN_L3 = 128 # neurons in the third layer
 NN_L4 = 128 # neurons in the fourth layer
 
-MIN_PROBA = 1e-5 # probability under which select a random cell instead of border cell
-
-GUESS_REWARD = -1 # randomly guessed the next play
-CONTINUE_REWARD = 1 # the reward gained each turn
+GUESS_REWARD = -1   # the reward when randomly guessed the next play
+CONTINUE_REWARD = 1 # the reward when found the next play
 LOSS_REWARD = -50   # the reward if we lose the game
-WIN_REWARD = 50    # the reward if we won the game
+WIN_REWARD = 50     # the reward if we won the game
 
-EPSILON_START = 0.95   # the initial epsilon value
-EPSILON_MIN = 0.01    # the minimum epsilon value
+EPSILON_START = 0.95    # the initial epsilon value
+EPSILON_MIN = 0.01      # the minimum epsilon value
 EPSILON_DECAY = 0.99975 # the decay epsilon 
 
-LR_LAST_EPOCH = -1
-LR_START = 0.001
-LR_MIN = 1e-6
-LR_DECAY = 0.9999
+LR_START = 0.001        # the initial learning rate value
+LR_MIN = 1e-6           # the minimum learning rate value
+LR_DECAY = 0.9999       # the decay learning rate
 
-NUM_EPISODES = 1000 # the number of episode per training
-GAMMA = 0.99 # the gamma value for QLearning
-TARGET_NETWORK_SYNC_PERIOD = 5
-BATCH_SIZE = 64
-
-REPLAY_BUFFER_CAPACITY = 1000*BATCH_SIZE
-MIN_REPLAY_BUFFER_SIZE = 10*BATCH_SIZE
+NUM_EPISODES = 1000000 # the number of episode per training
+GAMMA = 0.99           # the gamma value for QLearning
+TARGET_NETWORK_SYNC_PERIOD = 5 # the number of step before syncing the target and original models
+BATCH_SIZE = 64                # the batch size for the replay buffer
+REPLAY_BUFFER_CAPACITY = 1000*BATCH_SIZE # the maximum capacity of the replay buffer
+MIN_REPLAY_BUFFER_SIZE = 10*BATCH_SIZE   # the minimum replay buffer size required
 
 NUM_TRAININGS = 1 # the number of trainings
-NUM_TESTS = 100 # the number of tests
+NUM_TESTS = 100   # the number of tests
 
 # ------------------
 
@@ -142,7 +138,7 @@ class EpsilonGreedy():
 
 
 class MinimumExponentialLR(torch.optim.lr_scheduler.ExponentialLR):
-    def __init__(self, optimizer: torch.optim.Optimizer, lr_decay: float = LR_DECAY, last_epoch: int = LR_LAST_EPOCH, min_lr: float = LR_MIN):
+    def __init__(self, optimizer: torch.optim.Optimizer, lr_decay: float = LR_DECAY, last_epoch: int = -1, min_lr: float = LR_MIN):
         self.min_lr = min_lr
         super().__init__(optimizer, lr_decay, last_epoch=last_epoch)
 
@@ -366,11 +362,13 @@ class MLP_Solver():
         return episode_reward_list, episode_loss_list
 
 
-    def test_agent(self, num_tests: int = NUM_TESTS) -> list[int]:  
+    def test_agent(self, num_tests: int = NUM_TESTS, verbose: int = 0) -> list[int]:  
         episode_reward_list = []
         nb_wins = 0
+        sum_times = 0
 
         for _ in range(num_tests):
+            tic = time.perf_counter()
             state = self.envWrapper.reset()
             done = False
             episode_reward = 0
@@ -393,24 +391,35 @@ class MLP_Solver():
                 nb_wins += 1
 
             episode_reward_list.append(episode_reward)
-            # print(f"Episode reward: {episode_reward}")
+            toc = time.perf_counter()
+            cur_time = toc - tic
+            sum_times += cur_time
         
-        print(f"MLP strategy: {nb_wins / num_tests} wins on average ({nb_wins} / {num_tests})")
+        if verbose > 0:
+            print(f"Tests MLP strategy:")
+            print(f"{nb_wins / num_tests} wins on average ({nb_wins} / {num_tests})")
+            print(f"{(sum_times / num_tests):0.4f} seconds on average ({sum_times:0.4f} / {num_tests})")
         return episode_reward_list
 
 
 
-def load_or_train_model(solver, force_retrain=False, verbose=0):
+def load_or_train_model(solver, force_retrain=False, file=None, verbose=0):
     '''Helper function to check if the model must be trained or loaded from a file'''
     current_time = datetime.datetime.now()
-    model_file = current_time.strftime("%Y-%m-%d_%H-%M-%S.pth")
+    model_file = ""
+    if file is not None:
+        model_file = file
+    else:
+        model_file = "models/" + current_time.strftime("%Y-%m-%d_%H-%M-%S.pth")
 
     if (not force_retrain) and (os.path.isfile(model_file)):
-        print("Loading pre-trained model...")
+        if verbose > 0:
+            print("Loading pre-trained model...")
         solver.model = torch.load(model_file, map_location=solver.device)
         return
     
-    print("Training new model...")
+    if verbose > 0:
+        print("Training new model...")
     optimizer = torch.optim.Adam(q_network.parameters(), lr=LR_START)
     loss_fn = nn.MSELoss()
     epsilon_greedy = EpsilonGreedy(envWrapper=envWrapper, q_network=q_network)
@@ -439,7 +448,8 @@ if __name__ == "__main__":
     sum_times = 0
     for _ in range(NUM_TRAININGS):
         tic = time.perf_counter()
-        load_or_train_model(solver=solver, force_retrain=True)
+        load_or_train_model(solver=solver, file="models/weights_1million_episodes.pth", verbose=1) # comment to retrain the model
+        # load_or_train_model(solver=solver, force_retrain=True) # uncoment to retrain the model
         toc = time.perf_counter()
         cur_time = toc - tic
         print(f"Trained the model in {toc - tic:0.4f} seconds")
@@ -447,6 +457,5 @@ if __name__ == "__main__":
     print(f"Training {NUM_TRAININGS} models in {(sum_times / NUM_TRAININGS):0.4f} seconds on average")
     
     # test the model multiple times to get the winrate
-    nb_wins = 0
-    over = solver.test_agent()    
+    over = solver.test_agent(verbose=1)    
     print()
