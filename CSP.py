@@ -98,7 +98,6 @@ def simplify_constraints(constraints):
                 j += 1
             i += 1
             j = i+1 
-        count += 1
     return None
 
 
