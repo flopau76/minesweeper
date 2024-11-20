@@ -1,5 +1,7 @@
 # Project
 
+This project investigates machine learning to play minesweeper.
+
 ## How to run
 
 You can play the game yourself using the command:
